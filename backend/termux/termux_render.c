@@ -3,6 +3,7 @@
  * serverState, LorieBuffer_lock/unlock, lorie_mutex_lock/unlock, stopEventLoop.
  * render.h brings in tlog from the library's headers; we only use wlr_log.
  */
+#include "termux_render.h"
 #include <termux/render/render.h>
 #include <termux/render/buffer.h>
 #include <stdlib.h>
