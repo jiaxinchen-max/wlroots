@@ -49,28 +49,31 @@ int termux_render_get_conn_fd(void) {
 }
 
 void termux_render_get_size(int *width, int *height) {
+	LorieBuffer *buf = get_lorieBuffer();
 	if (!width && !height) return;
-	if (!lorieBuffer) {
+	if (!buf) {
 		if (width) *width = 0;
 		if (height) *height = 0;
 		return;
 	}
-	const LorieBuffer_Desc *desc = LorieBuffer_description(lorieBuffer);
+	const LorieBuffer_Desc *desc = LorieBuffer_description(buf);
 	if (width) *width = desc->width;
 	if (height) *height = desc->height;
 }
 
 int termux_render_push_frame(const void *data, size_t stride_bytes) {
-	if (!connected || !lorieBuffer || !serverState || !data) {
+	LorieBuffer *buf = get_lorieBuffer();
+	struct lorie_shared_server_state *state = get_serverState();
+	if (!connected || !buf || !state || !data) {
 		return -1;
 	}
-	lorie_mutex_lock(&serverState->lock, &serverState->lockingPid);
+	lorie_mutex_lock(&state->lock, &state->lockingPid);
 	void *shared_buffer = NULL;
-	if (LorieBuffer_lock(lorieBuffer, &shared_buffer) != 0) {
-		lorie_mutex_unlock(&serverState->lock, &serverState->lockingPid);
+	if (LorieBuffer_lock(buf, &shared_buffer) != 0) {
+		lorie_mutex_unlock(&state->lock, &state->lockingPid);
 		return -1;
 	}
-	const LorieBuffer_Desc *desc = LorieBuffer_description(lorieBuffer);
+	const LorieBuffer_Desc *desc = LorieBuffer_description(buf);
 	int w = desc->width;
 	int h = desc->height;
 	int stride = desc->stride > 0 ? desc->stride : w;
@@ -85,10 +88,10 @@ int termux_render_push_frame(const void *data, size_t stride_bytes) {
 				(size_t)w * 4);
 		}
 	}
-	serverState->waitForNextFrame = 0;
-	serverState->drawRequested = 1;
-	pthread_cond_signal(&serverState->cond);
-	lorie_mutex_unlock(&serverState->lock, &serverState->lockingPid);
-	LorieBuffer_unlock(lorieBuffer);
+	state->waitForNextFrame = 0;
+	state->drawRequested = 1;
+	pthread_cond_signal(&state->cond);
+	lorie_mutex_unlock(&state->lock, &state->lockingPid);
+	LorieBuffer_unlock(buf);
 	return 0;
 }
