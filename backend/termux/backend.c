@@ -4,7 +4,7 @@
 #include <wlr/util/log.h>
 #include "backend/termux.h"
 
-static struct wlr_termux_backend *termux_backend_from_backend(struct wlr_backend *b) {
+struct wlr_termux_backend *termux_backend_from_backend(struct wlr_backend *b) {
 	assert(wlr_backend_is_termux(b));
 	return (struct wlr_termux_backend *)b;
 }
