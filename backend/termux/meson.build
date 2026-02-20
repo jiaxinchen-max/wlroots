@@ -1,5 +1,6 @@
 # libtermux-render and termux/render/* (render.h, buffer.h, tlog) are on system include path.
-termux_dep = find_library('termux-render', required: true)
+cc = meson.get_compiler('c')
+termux_dep = cc.find_library('termux-render', required: true)
 termux_inc = include_directories(meson.current_source_dir())
 
 wlr_deps += [termux_dep, declare_dependency(include_directories: termux_inc)]
