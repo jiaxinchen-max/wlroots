@@ -5,6 +5,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/util/log.h>
 #include "backend/termux.h"
@@ -18,7 +20,7 @@ static const uint32_t SUPPORTED_OUTPUT_STATE =
 
 static struct wlr_termux_output *termux_output_from_output(struct wlr_output *o) {
 	assert(wlr_output_is_termux(o));
-	return wl_container_of(o, (struct wlr_termux_output){0}, wlr_output);
+	return wl_container_of(o, (struct wlr_termux_output *)0, wlr_output);
 }
 
 static bool output_test(struct wlr_output *wlr_output, const struct wlr_output_state *state) {
@@ -46,9 +48,13 @@ static bool copy_buffer_to_lorie(struct wlr_termux_output *output, const struct 
 	} else {
 		struct wlr_shm_attributes shm;
 		if (wlr_buffer_get_shm(buf, &shm)) {
-			uint8_t *ptr = (uint8_t *)(uintptr_t)shm.data;
-			size_t s = (shm.stride > 0) ? (size_t)shm.stride : (size_t)buf->width * 4;
-			ok = termux_render_push_frame(ptr, s) == 0;
+			size_t s = (shm.stride > 0 ? (size_t)shm.stride : (size_t)buf->width * 4)
+				* (size_t)shm.height;
+			void *ptr = mmap(NULL, s, PROT_READ, MAP_SHARED, shm.fd, shm.offset);
+			if (ptr != MAP_FAILED) {
+				ok = termux_render_push_frame(ptr, (size_t)(shm.stride > 0 ? shm.stride : buf->width * 4)) == 0;
+				munmap(ptr, s);
+			}
 		}
 	}
 	if (!ok) {
