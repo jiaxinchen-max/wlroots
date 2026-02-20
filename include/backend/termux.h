@@ -1,6 +1,8 @@
 #ifndef BACKEND_TERMUX_H
 #define BACKEND_TERMUX_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <wlr/backend/termux.h>
 #include <wlr/backend/interface.h>
 #include <wlr/types/wlr_pointer.h>
@@ -39,5 +41,13 @@ struct wlr_termux_backend *termux_backend_from_backend(struct wlr_backend *wlr_b
 
 void termux_input_create_devices(struct wlr_termux_backend *backend);
 void termux_input_destroy(struct wlr_termux_backend *backend);
+
+/* libtermux-render wrapper; use <termux/render/render.h> and <termux/render/buffer.h> where you need library types. */
+int termux_render_connect(int width, int height, int refresh);
+void termux_render_disconnect(void);
+int termux_render_push_frame(const void *data, size_t stride_bytes);
+void termux_render_get_size(int *width, int *height);
+bool termux_render_connected(void);
+int termux_render_get_conn_fd(void);
 
 #endif

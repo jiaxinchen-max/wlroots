@@ -18,7 +18,6 @@
 #include <wlr/util/log.h>
 
 #include "backend/termux.h"
-#include "termux_render.h"
 #include "util/time.h"
 
 /* Match termux-display-client include/render.h eventType enum */

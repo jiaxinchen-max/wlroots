@@ -10,7 +10,6 @@
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/util/log.h>
 #include "backend/termux.h"
-#include "termux_render.h"
 #include "types/wlr_output.h"
 
 static const uint32_t SUPPORTED_OUTPUT_STATE =
