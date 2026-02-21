@@ -23,7 +23,7 @@ static void randname(char *buf) {
 #if defined(__ANDROID__)
 /* Android: use LorieBuffer_createRegion from termux-display-client (libtermux-render)
  * instead of POSIX shm_open/shm_unlink (not available in bionic). */
-#include <buffer.h>
+#include <termux/render/buffer.h>
 
 static int android_shm_open_rw(char *name, size_t size) {
 	randname(name + strlen(RANDNAME_PATTERN) - 6);
