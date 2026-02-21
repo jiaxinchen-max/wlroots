@@ -3,8 +3,10 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <wayland-server-core.h>
 #include <wlr/backend/termux.h>
 #include <wlr/backend/interface.h>
+#include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_touch.h>
 
@@ -19,6 +21,23 @@ struct wlr_termux_backend {
 	struct wl_event_source *input_event;
 	struct wlr_termux_pointer *pointer;
 	struct wlr_termux_touch *touch;
+	struct wlr_termux_keyboard *keyboard;
+
+	/** Emitted when a Unicode codepoint is received (EVENT_UNICODE). data: const uint32_t* codepoint. Compositor may forward via wlr_text_input_v3_send_commit_string. */
+	struct wl_signal events_unicode;
+
+	/** Pending resize from EVENT_SCREEN_SIZE; timer triggers reinit (disconnect, sleep, connect, update output, recreate input). */
+	struct {
+		int width;
+		int height;
+		int framerate;
+		struct wl_event_source *timer;
+	} resize_pending;
+};
+
+struct wlr_termux_keyboard {
+	struct wlr_keyboard wlr_keyboard;
+	struct wlr_termux_backend *backend;
 };
 
 struct wlr_termux_output {

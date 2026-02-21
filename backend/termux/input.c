@@ -1,7 +1,7 @@
 /*
  * Termux input: read lorieEvent from conn_fd (libtermux-render get_conn_fd),
- * dispatch to wlr_pointer and wlr_touch. Event layout matches termux-display-client
- * include/render.h lorieEvent union (EVENT_MOUSE, EVENT_TOUCH).
+ * dispatch to wlr_pointer, wlr_touch, wlr_keyboard. Event layout matches
+ * termux-display-client include/render.h lorieEvent union.
  */
 #include <assert.h>
 #include <errno.h>
@@ -10,19 +10,26 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
+#include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_pointer.h>
 #include <wlr/interfaces/wlr_touch.h>
 #include <wlr/types/wlr_input_device.h>
+#include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_touch.h>
 #include <wlr/util/log.h>
+#include <xkbcommon/xkbcommon.h>
 
 #include "backend/termux.h"
 #include "util/time.h"
+#include <wlr/types/wlr_output.h>
 
 /* Match termux-display-client include/render.h eventType enum */
-#define LORIE_EVENT_TOUCH  6
+#define LORIE_EVENT_SCREEN_SIZE 4
+#define LORIE_EVENT_TOUCH   6
 #define LORIE_EVENT_MOUSE  7
+#define LORIE_EVENT_KEY    8
+#define LORIE_EVENT_UNICODE 10
 
 /* Layout matches lorieEvent.touch / .mouse in render.h (no Android deps here) */
 typedef struct {
@@ -44,6 +51,33 @@ typedef struct {
 	uint8_t relative;
 } lorie_mouse_ev;
 
+/* Layout matches lorieEvent.key / .unicode in render.h */
+typedef struct {
+	uint8_t t;
+	uint8_t _pad;
+	uint16_t key;   /* Linux keycode + 8 (as sent by sendKeyEvent) */
+	uint8_t state;  /* key_down */
+} lorie_key_ev;
+
+typedef struct {
+	uint8_t t;
+	uint8_t _pad[3];
+	uint32_t code;  /* Unicode codepoint */
+} lorie_unicode_ev;
+
+/* Layout matches lorieEvent.screenSize in render.h (width, height, framerate, name_size). */
+typedef struct {
+	uint8_t t;
+	uint8_t _pad;
+	uint16_t width;
+	uint16_t height;
+	uint16_t framerate;
+	size_t name_size;
+} lorie_screen_size_ev;
+
+/* Must match sizeof(lorieEvent) in termux-display-client include/render.h.
+ * Sender and wlroots run on the same device so ABI matches. No runtime arch
+ * check; we use 64-bit layout size (union has pointer in screenSize). */
 #define LORIE_EVENT_SIZE 32
 
 static const struct wlr_pointer_impl termux_pointer_impl = {
@@ -52,6 +86,10 @@ static const struct wlr_pointer_impl termux_pointer_impl = {
 
 static const struct wlr_touch_impl termux_touch_impl = {
 	.name = "termux-touch",
+};
+
+static const struct wlr_keyboard_impl termux_keyboard_impl = {
+	.name = "termux-keyboard",
 };
 
 /* Wayland/Linux button codes */
@@ -181,6 +219,90 @@ static void handle_lorie_touch(struct wlr_termux_backend *backend,
 	wl_signal_emit_mutable(&touch->events.frame, NULL);
 }
 
+static void handle_lorie_key(struct wlr_termux_backend *backend,
+		const lorie_key_ev *ev) {
+	if (!backend->keyboard) {
+		return;
+	}
+	/* sendKeyEvent sends key = code + 8; use keycode for wlr_keyboard */
+	uint32_t keycode = (ev->key >= 8) ? (ev->key - 8) : 0;
+	enum wl_keyboard_key_state state = ev->state ?
+		WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
+	struct wlr_keyboard_key_event wlr_ev = {
+		.keycode = keycode,
+		.update_state = true,
+		.time_msec = (uint32_t)get_current_time_msec(),
+		.state = state,
+	};
+	wlr_keyboard_notify_key(&backend->keyboard->wlr_keyboard, &wlr_ev);
+}
+
+static void handle_lorie_unicode(struct wlr_termux_backend *backend,
+		const lorie_unicode_ev *ev) {
+	uint32_t codepoint = ev->code;
+	wl_signal_emit_mutable(&backend->events_unicode, &codepoint);
+}
+
+/** Drain exactly size bytes from fd (e.g. optional name after EVENT_SCREEN_SIZE). */
+static void drain_fd(int fd, size_t size) {
+	char buf[256];
+	while (size > 0) {
+		ssize_t n = read(fd, buf, size < sizeof(buf) ? size : sizeof(buf));
+		if (n <= 0) break;
+		size -= (size_t)n;
+	}
+}
+
+static int resize_timer_handler(void *data) {
+	struct wlr_termux_backend *backend = data;
+	int w = backend->resize_pending.width;
+	int h = backend->resize_pending.height;
+	int refresh = backend->resize_pending.framerate > 0 ? backend->resize_pending.framerate : 60;
+
+	backend->resize_pending.timer = NULL;
+
+	termux_input_destroy(backend);
+	termux_render_disconnect();
+	sleep(1);
+	if (termux_render_connect(w, h, refresh) != 0) {
+		wlr_log(WLR_ERROR, "termux: resize reconnect failed");
+		return 0;
+	}
+	int actual_w = 0, actual_h = 0;
+	termux_render_get_size(&actual_w, &actual_h);
+	if (actual_w > 0 && actual_h > 0) {
+		w = actual_w;
+		h = actual_h;
+	}
+	struct wlr_termux_output *out;
+	wl_list_for_each(out, &backend->outputs, link) {
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		wlr_output_state_set_custom_mode(&state, w, h, refresh);
+		wlr_output_commit_state(&out->wlr_output, &state);
+		wlr_output_state_finish(&state);
+		break;
+	}
+	termux_input_create_devices(backend);
+	wlr_log(WLR_INFO, "termux: resize done %dx%d@%d", w, h, refresh);
+	return 0;
+}
+
+static void schedule_resize_reinit(struct wlr_termux_backend *backend,
+		int width, int height, int framerate) {
+	if (backend->resize_pending.timer) {
+		wl_event_source_remove(backend->resize_pending.timer);
+	}
+	backend->resize_pending.width = width;
+	backend->resize_pending.height = height;
+	backend->resize_pending.framerate = framerate;
+	backend->resize_pending.timer = wl_event_loop_add_timer(backend->event_loop,
+		1000, resize_timer_handler, backend);
+	if (backend->resize_pending.timer) {
+		wl_event_source_timer_update(backend->resize_pending.timer, 1000);
+	}
+}
+
 static int termux_input_readable(int fd, uint32_t mask, void *data) {
 	struct wlr_termux_backend *backend = data;
 	uint8_t buf[LORIE_EVENT_SIZE];
@@ -192,16 +314,29 @@ static int termux_input_readable(int fd, uint32_t mask, void *data) {
 		wlr_log(WLR_ERROR, "termux: read conn_fd: %s", strerror(errno));
 		return 0;
 	}
-	if (n < 1) {
+	if (n != LORIE_EVENT_SIZE) {
+		if (n > 0) {
+			wlr_log(WLR_DEBUG, "termux: expected %d bytes (one lorieEvent), got %zd", LORIE_EVENT_SIZE, (size_t)n);
+		}
 		return 0;
 	}
 	uint8_t type = buf[0];
 	uint32_t time_msec = (uint32_t)get_current_time_msec();
 
-	if (type == LORIE_EVENT_MOUSE && n >= (ssize_t)sizeof(lorie_mouse_ev)) {
+	if (type == LORIE_EVENT_MOUSE) {
 		handle_lorie_mouse(backend, (const lorie_mouse_ev *)buf);
-	} else if (type == LORIE_EVENT_TOUCH && n >= (ssize_t)sizeof(lorie_touch_ev)) {
+	} else if (type == LORIE_EVENT_TOUCH) {
 		handle_lorie_touch(backend, (const lorie_touch_ev *)buf, time_msec);
+	} else if (type == LORIE_EVENT_KEY) {
+		handle_lorie_key(backend, (const lorie_key_ev *)buf);
+	} else if (type == LORIE_EVENT_UNICODE) {
+		handle_lorie_unicode(backend, (const lorie_unicode_ev *)buf);
+	} else if (type == LORIE_EVENT_SCREEN_SIZE) {
+		const lorie_screen_size_ev *ev = (const lorie_screen_size_ev *)buf;
+		if (ev->width > 0 && ev->height > 0) {
+			drain_fd(fd, ev->name_size);
+			schedule_resize_reinit(backend, (int)ev->width, (int)ev->height, (int)ev->framerate);
+		}
 	}
 	return 0;
 }
@@ -240,10 +375,38 @@ void termux_input_create_devices(struct wlr_termux_backend *backend) {
 	backend->touch->backend = backend;
 	wl_signal_emit_mutable(&backend->backend.events.new_input, &backend->touch->wlr_touch.base);
 
+	backend->keyboard = calloc(1, sizeof(*backend->keyboard));
+	if (!backend->keyboard) {
+		wlr_log(WLR_ERROR, "termux: failed to allocate keyboard");
+		wlr_touch_finish(&backend->touch->wlr_touch);
+		free(backend->touch->wlr_touch.output_name);
+		free(backend->touch);
+		backend->touch = NULL;
+		wlr_pointer_finish(&backend->pointer->wlr_pointer);
+		free(backend->pointer->wlr_pointer.output_name);
+		free(backend->pointer);
+		backend->pointer = NULL;
+		return;
+	}
+	wlr_keyboard_init(&backend->keyboard->wlr_keyboard, &termux_keyboard_impl, "termux-keyboard");
+	backend->keyboard->backend = backend;
+	struct xkb_context *xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+	struct xkb_keymap *keymap = xkb_keymap_new_from_names(xkb_ctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+	if (keymap) {
+		wlr_keyboard_set_keymap(&backend->keyboard->wlr_keyboard, keymap);
+		xkb_keymap_unref(keymap);
+	}
+	xkb_context_unref(xkb_ctx);
+	wlr_keyboard_set_repeat_info(&backend->keyboard->wlr_keyboard, 25, 600);
+	wl_signal_emit_mutable(&backend->backend.events.new_input, &backend->keyboard->wlr_keyboard.base);
+
 	backend->input_event = wl_event_loop_add_fd(backend->event_loop, conn_fd,
 		WL_EVENT_READABLE, termux_input_readable, backend);
 	if (!backend->input_event) {
 		wlr_log(WLR_ERROR, "termux: failed to add conn_fd to event loop");
+		wlr_keyboard_finish(&backend->keyboard->wlr_keyboard);
+		free(backend->keyboard);
+		backend->keyboard = NULL;
 		wlr_touch_finish(&backend->touch->wlr_touch);
 		free(backend->touch->wlr_touch.output_name);
 		free(backend->touch);
@@ -258,9 +421,18 @@ void termux_input_create_devices(struct wlr_termux_backend *backend) {
 }
 
 void termux_input_destroy(struct wlr_termux_backend *backend) {
+	if (backend->resize_pending.timer) {
+		wl_event_source_remove(backend->resize_pending.timer);
+		backend->resize_pending.timer = NULL;
+	}
 	if (backend->input_event) {
 		wl_event_source_remove(backend->input_event);
 		backend->input_event = NULL;
+	}
+	if (backend->keyboard) {
+		wlr_keyboard_finish(&backend->keyboard->wlr_keyboard);
+		free(backend->keyboard);
+		backend->keyboard = NULL;
 	}
 	if (backend->pointer) {
 		wlr_pointer_finish(&backend->pointer->wlr_pointer);

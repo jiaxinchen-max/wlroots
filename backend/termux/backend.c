@@ -57,6 +57,7 @@ struct wlr_backend *wlr_termux_backend_create(struct wl_event_loop *loop, const 
 	backend->event_loop = loop;
 	backend->socket_path = socket_path ? strdup(socket_path) : NULL;
 	wl_list_init(&backend->outputs);
+	wl_signal_init(&backend->events_unicode);
 	backend->event_loop_destroy.notify = handle_event_loop_destroy;
 	wl_event_loop_add_destroy_listener(loop, &backend->event_loop_destroy);
 	return &backend->backend;
