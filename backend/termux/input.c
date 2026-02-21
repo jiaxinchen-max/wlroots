@@ -297,7 +297,7 @@ static void schedule_resize_reinit(struct wlr_termux_backend *backend,
 	backend->resize_pending.height = height;
 	backend->resize_pending.framerate = framerate;
 	backend->resize_pending.timer = wl_event_loop_add_timer(backend->event_loop,
-		1000, resize_timer_handler, backend);
+		resize_timer_handler, backend);
 	if (backend->resize_pending.timer) {
 		wl_event_source_timer_update(backend->resize_pending.timer, 1000);
 	}
